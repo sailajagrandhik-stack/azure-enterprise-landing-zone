@@ -1,0 +1,14 @@
+# Terraform state — never commit (can contain secrets; lives in Azure storage)
+*.tfstate
+*.tfstate.*
+
+# Local provider downloads and plan files
+.terraform/
+tfplan
+plan.txt
+crash.log
+
+# Real variable values (subscription IDs etc.). The *.tfvars.example files ARE committed.
+*.tfvars
+
+# NOTE: .terraform.lock.hcl IS committed on purpose — it pins provider versions.
