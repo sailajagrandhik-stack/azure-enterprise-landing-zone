@@ -1,0 +1,122 @@
+# Terraform pipeline — the "real team" flow:
+#   Pull request  → fmt + validate + plan (shown in the run summary for review)
+#   Merge to main → plan + apply, after an approval on the "production" environment
+#
+# Signs in to Azure with OIDC: no passwords or client secrets are stored anywhere.
+
+name: terraform
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch: # "Run workflow" button, for re-running by hand
+
+permissions:
+  id-token: write # lets GitHub hand out the OIDC token Azure trusts
+  contents: read
+
+concurrency:
+  group: terraform-${{ github.ref }} # never two runs on the same branch at once
+  cancel-in-progress: false
+
+env:
+  # Azure sign-in (OIDC) — used by azurerm, azuread AND the state backend
+  ARM_USE_OIDC: "true"
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+  # Terraform input variables (replace terraform.tfvars, which is not in Git)
+  TF_VAR_prefix: ${{ vars.TF_PREFIX }}
+  TF_VAR_company_name: ${{ vars.TF_COMPANY_NAME }}
+  TF_VAR_platform_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  TF_VAR_platform_admin_object_ids: ${{ vars.PLATFORM_ADMIN_OBJECT_IDS }}
+
+  TF_IN_AUTOMATION: "true"
+  TF_VERSION: "v1.16.5" # match `terraform version` on your laptop
+
+jobs:
+  # ───────────────────────────── PLAN (on pull requests) ─────────────────────────────
+  plan:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Add each new layer here in its own PR, AFTER the previous one is applied.
+        # Next PR: add "02-policy".
+        step: ["01-foundation"]
+    defaults:
+      run:
+        working-directory: ${{ matrix.step }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Format check
+        run: terraform fmt -check -recursive
+
+      - name: Init
+        run: >
+          terraform init -input=false
+          -backend-config="resource_group_name=${{ vars.TFSTATE_RG }}"
+          -backend-config="storage_account_name=${{ vars.TFSTATE_SA }}"
+          -backend-config="container_name=tfstate"
+          -backend-config="use_azuread_auth=true"
+
+      - name: Validate
+        run: terraform validate -no-color
+
+      - name: Plan
+        run: |
+          terraform plan -input=false -no-color -out=tfplan
+          terraform show -no-color tfplan > plan.txt
+
+      - name: Show plan in the run summary
+        if: always()
+        run: |
+          echo "## Plan for \`${{ matrix.step }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f plan.txt ]; then tail -c 60000 plan.txt >> "$GITHUB_STEP_SUMMARY"; else echo "plan failed — see the log" >> "$GITHUB_STEP_SUMMARY"; fi
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  # ───────────────────────────── APPLY (after merge to main) ─────────────────────────────
+  apply:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: production # waits here for a reviewer to click "Approve"
+    strategy:
+      max-parallel: 1 # one layer at a time, in the order listed
+      fail-fast: true # if a layer fails, don't apply the ones after it
+      matrix:
+        step: ["01-foundation"]
+    defaults:
+      run:
+        working-directory: ${{ matrix.step }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Init
+        run: >
+          terraform init -input=false
+          -backend-config="resource_group_name=${{ vars.TFSTATE_RG }}"
+          -backend-config="storage_account_name=${{ vars.TFSTATE_SA }}"
+          -backend-config="container_name=tfstate"
+          -backend-config="use_azuread_auth=true"
+
+      - name: Plan
+        run: terraform plan -input=false -no-color -out=tfplan
+
+      - name: Apply
+        run: terraform apply -input=false -auto-approve tfplan
