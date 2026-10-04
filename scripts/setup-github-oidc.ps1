@@ -9,7 +9,8 @@
     3. Azure roles for the pipeline:
          - Owner on Tenant Root Group   (to build management groups + RBAC)
          - Storage Blob Data Contributor on the state storage account
-    4. Microsoft Graph permissions (to create Entra groups) + admin consent
+    4. Microsoft Graph permissions (to create Entra groups and look up their
+       owners: users AND app accounts) + admin consent
 
   Run from the project folder, signed in with `az login` as a Global Admin
   with "elevated access" turned on:
@@ -49,6 +50,10 @@ $creds = @(
 $existing = az ad app federated-credential list --id $appId --query "[].name" -o tsv
 foreach ($c in $creds) {
   if ($existing -contains $c.name) { Write-Host "    exists: $($c.name)"; continue }
+  # NOTE: GitHub now sends subjects with numeric IDs, e.g.
+  #   repo:<owner>@<ownerId>/<repo>@<repoId>:pull_request
+  # If the pipeline fails with AADSTS700213, copy the exact subject from the
+  # error message into the federated credential.
   $tmp = New-TemporaryFile
   @{
     name      = $c.name
@@ -70,9 +75,9 @@ az role assignment create --assignee-object-id $spObjectId --assignee-principal-
   --role "Storage Blob Data Contributor" --scope $saId | Out-Null
 Write-Host "    Storage Blob Data Contributor on $sa"
 
-Write-Host "`n[4/4] Microsoft Graph permissions (Group.ReadWrite.All, User.Read.All)" -ForegroundColor Cyan
+Write-Host "`n[4/4] Microsoft Graph permissions (Group.ReadWrite.All, User.Read.All, Directory.Read.All)" -ForegroundColor Cyan
 az ad app permission add --id $appId --api 00000003-0000-0000-c000-000000000000 `
-  --api-permissions 62a82d76-70ea-41e2-9197-370581804d09=Role df021288-bdef-4463-88db-98f22de89214=Role 2>$null
+  --api-permissions 62a82d76-70ea-41e2-9197-370581804d09=Role df021288-bdef-4463-88db-98f22de89214=Role 7ab1d382-f21e-4acd-a863-ba3e13f7da61=Role 2>$null
 Start-Sleep -Seconds 20
 az ad app permission admin-consent --id $appId
 Write-Host "    granted (admin consent)"
