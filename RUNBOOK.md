@@ -216,6 +216,19 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\setup-github-oidc.ps1 -GitHubOwner <your-github-username>
 ```
 
+> **Doing it by hand in the portal instead?** Entra ID → App registrations →
+> New registration. Then:
+> - **Federated credentials** (Certificates & secrets): use scenario
+>   **Other issuer**, issuer `https://token.actions.githubusercontent.com`,
+>   and the subject **exactly as GitHub sends it**. GitHub now includes
+>   numeric IDs: `repo:<owner>@<ownerId>/<repo>@<repoId>:pull_request` and
+>   `...:environment:production`. Easiest way to get it right: let the first
+>   run fail, then copy the subject from the `AADSTS700213` error.
+> - **Azure roles:** Owner on **Tenant Root Group** (not the subscription),
+>   Storage Blob Data Contributor on the state storage account.
+> - **API permissions** (Microsoft Graph, Application): Group.ReadWrite.All,
+>   User.Read.All, **Directory.Read.All** → **Grant admin consent**.
+
 ### 9c. Secrets and variables
 Repo → **Settings → Secrets and variables → Actions** — copy the values the
 script printed:
@@ -230,6 +243,7 @@ script printed:
 | Variables | `TF_PREFIX` | `grandhi` |
 | Variables | `TF_COMPANY_NAME` | `Grandhi` |
 | Variables | `PLATFORM_ADMIN_OBJECT_IDS` | `["<your object id>"]` (brackets and quotes included) |
+| Variables | `AUTOMATION_OBJECT_IDS` | `["<pipeline service principal object id>"]` — `az ad sp show --id <client-id> --query id -o tsv` |
 
 ### 9d. Approval gate
 Repo → **Settings → Environments → New environment** → `production` →
@@ -278,8 +292,19 @@ git push -u origin feature/01-foundation
 git switch -c feature/02-policy
 ```
 
-In `.github/workflows/terraform.yml`, in **both** matrix lists, change
-`step: ["01-foundation"]` → `step: ["01-foundation", "02-policy"]`.
+Two edits in `.github/workflows/terraform.yml`:
+
+1. In **both** matrix lists, change
+   `step: ["01-foundation"]` → `step: ["01-foundation", "02-policy"]`.
+2. In the `env:` section, under the other `TF_VAR_` lines, add:
+   ```yaml
+   TF_VAR_enforce: ${{ vars.POLICY_ENFORCE }}
+   ```
+
+On GitHub, add a repository **variable** `POLICY_ENFORCE` = `false`.
+That rolls the policies out in **report-only** mode first (nothing is blocked).
+After checking **Policy → Compliance** in the portal, change it to `true` and
+re-run the workflow (Actions → terraform → **Run workflow**) to start enforcing.
 
 ```powershell
 git add .github 02-policy
@@ -312,12 +337,14 @@ git push -u origin feature/<short-name>        # → PR → review plan → merg
 
 | Error | Cause | Fix |
 |---|---|---|
-| `AADSTS700213` / `No matching federated identity record` | Repo name, username or environment name doesn't match the trust | Re-run the setup script with the exact GitHub username; environment must be named `production` |
+| `AADSTS700213` / `No matching federated identity record` | The trust rule's subject doesn't match what GitHub sent (GitHub now includes numeric IDs: `repo:<owner>@<ownerId>/<repo>@<repoId>:...`) | Copy the exact subject from the error message into the federated credential |
 | `403` / `AuthorizationPermissionMismatch` on the state blob | Storage role not active yet | Wait 5–10 minutes and re-run |
-| `Authorization_RequestDenied` creating groups | Graph admin consent missing | Entra ID → App registrations → the app → API permissions → **Grant admin consent** |
+| `Authorization_RequestDenied` / `Could not retrieve owner principal object` creating groups | Graph permission or admin consent missing | App → API permissions: **Group.ReadWrite.All, User.Read.All, Directory.Read.All** (Application), all **Granted** |
 | `AuthorizationFailed` on management groups | Pipeline missing Owner at Tenant Root | Re-run the setup script with elevated access on |
 | `terraform fmt -check` fails | Formatting differences | `terraform fmt -recursive` locally, commit, push |
 | `Error acquiring the state lock` | Another run is still going, or one crashed | Wait; if stuck, `terraform force-unlock <LOCK_ID>` locally |
+| `Variables not allowed` on a list variable | GitHub variable missing brackets/quotes | Value must look like `["id"]` |
+| Laptop plan differs from pipeline plan | Two sources for the same value (local tfvars vs GitHub variables), or code that depends on who runs it | Make values match; never use "current user" for things like owners |
 | `ScopeLocked` during destroy | Delete lock still on the resource group | Destroy the lock first (Part 0) |
 
 ## Real-world upgrades (good interview talking points)
