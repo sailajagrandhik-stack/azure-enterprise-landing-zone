@@ -20,6 +20,12 @@ variable "platform_admin_object_ids" {
   default     = []
 }
 
+variable "automation_object_ids" {
+  type        = list(string)
+  description = "Object IDs of automation identities (the pipeline's service principal) that must stay owners of the Entra groups. Get it: az ad sp show --id <client-id> --query id -o tsv"
+  default     = []
+}
+
 output "management_group_ids" {
   description = "Used by step 2 (policy) to know where to attach policies."
   value = {

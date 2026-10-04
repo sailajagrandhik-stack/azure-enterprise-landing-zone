@@ -55,8 +55,10 @@ resource "azuread_group" "this" {
   display_name     = "grp-${var.prefix}-${each.key}"
   description      = each.value
   security_enabled = true
-  # Owners = whoever runs Terraform (you locally, or the pipeline) + the named admins.
-  owners = distinct(concat([data.azuread_client_config.current.object_id], var.platform_admin_object_ids))
+  # Owners are listed EXPLICITLY (admins + the pipeline's identity), never
+  # "whoever runs Terraform" — otherwise a laptop plan and a pipeline plan
+  # would disagree about who the owners should be.
+  owners = distinct(concat(var.platform_admin_object_ids, var.automation_object_ids))
 }
 
 resource "azurerm_role_assignment" "this" {
